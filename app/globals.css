@@ -411,3 +411,46 @@ input:disabled { opacity: 0.6; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* ---------- Groupes ---------- */
+.unit-avatar { display: inline-flex; align-items: center; flex-shrink: 0; }
+.unit-avatar > span { position: relative; display: inline-flex; }
+.unit-more { margin-left: 4px; font-weight: 700; color: var(--ink-soft); font-size: 0.85rem; }
+.groups { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.group-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px dashed var(--paper-edge);
+  flex-wrap: wrap;
+}
+.group-row:last-child { border-bottom: 0; }
+.group-form { padding-top: 14px; border-top: 2px dashed var(--paper-edge); }
+.field-label { font-weight: 600; font-size: 0.95rem; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px 4px 4px;
+  border: 2px solid var(--paper-edge);
+  border-radius: 999px;
+  background: var(--snow);
+  cursor: pointer;
+  font-weight: 500;
+}
+.chip input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.chip.on { border-color: var(--pine-soft); background: #dfeee6; }
+.chip:focus-within { outline: 3px solid var(--foil); outline-offset: 2px; }
+.chip .avatar { border-width: 2px; box-shadow: none; }
+.member-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 8px 0 0;
+  font-family: var(--display);
+  font-weight: 400;
+  font-size: 1.1rem;
+  color: var(--ink);
+}

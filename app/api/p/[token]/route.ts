@@ -1,63 +1,68 @@
 import { db } from "@/lib/supabase";
 import { fail, handle, must, text, url } from "@/lib/server";
+import { unitName, unitViews } from "@/lib/units";
 import type { Idea, MeState, Profile, RoomState } from "@/lib/types";
 
 type Params = { params: Promise<{ token: string }> };
 
-type Me = Profile & { event_id: string };
+type Me = Profile & { event_id: string; unit_id: string };
 
 async function loadMe(token: string): Promise<Me> {
   const rows = must(
-    await db().from("participants").select("id, pseudo, avatar, event_id").eq("token", token).limit(1),
+    await db().from("participants").select("id, pseudo, avatar, event_id, unit_id").eq("token", token).limit(1),
   ) as Me[];
   if (!rows.length) fail(404, "Ce lien n'est pas (ou plus) valide. Demande un nouveau lien à l'organisateur.");
   return rows[0];
 }
 
-/** Mes attributions, dans un ordre stable (les « tickets » 1, 2, 3...). */
-async function myAssignments(me: Me) {
+/** Les unités tirées par mon unité (personne seule ou groupe), dans un ordre stable. */
+async function myDraws(me: Me): Promise<string[]> {
   const rows = must(
-    await db().from("assignments").select("receiver_id, revealed_at").eq("giver_id", me.id),
-  ) as Array<{ receiver_id: string; revealed_at: string | null }>;
-  return rows.sort((a, b) => a.receiver_id.localeCompare(b.receiver_id));
+    await db().from("assignments").select("receiver_unit").eq("giver_unit", me.unit_id),
+  ) as Array<{ receiver_unit: string }>;
+  return rows.map((r) => r.receiver_unit).sort();
 }
 
-async function profiles(ids: string[]): Promise<Map<string, Profile>> {
-  if (!ids.length) return new Map();
-  const rows = must(await db().from("participants").select("id, pseudo, avatar").in("id", ids)) as Profile[];
-  return new Map(rows.map((p) => [p.id, p]));
+async function myReveals(me: Me): Promise<Set<string>> {
+  const rows = must(
+    await db().from("reveals").select("receiver_unit").eq("participant_id", me.id),
+  ) as Array<{ receiver_unit: string }>;
+  return new Set(rows.map((r) => r.receiver_unit));
 }
 
-/** Vérifie que je suis père Noël de receiverId ET que je l'ai découvert. */
-async function assertSanta(me: Me, receiverId: unknown): Promise<string> {
-  if (typeof receiverId !== "string") fail(400, "Room invalide.");
-  const rows = must(
-    await db()
-      .from("assignments")
-      .select("revealed_at")
-      .eq("giver_id", me.id)
-      .eq("receiver_id", receiverId as string)
-      .limit(1),
-  ) as Array<{ revealed_at: string | null }>;
-  if (!rows.length || !rows[0].revealed_at) fail(403, "Tu n'as pas accès à cette room.");
-  return receiverId as string;
+/** Vérifie que mon unité a tiré receiverUnit ET que j'ai gratté ce ticket. */
+async function assertSanta(me: Me, receiverUnit: unknown): Promise<string> {
+  if (typeof receiverUnit !== "string") fail(400, "Room invalide.");
+  const [draws, reveals] = await Promise.all([myDraws(me), myReveals(me)]);
+  if (!draws.includes(receiverUnit as string) || !reveals.has(receiverUnit as string)) {
+    fail(403, "Tu n'as pas accès à cette room.");
+  }
+  return receiverUnit as string;
 }
 
 async function meState(me: Me): Promise<MeState> {
-  const evRows = must(
-    await db().from("events").select("name, draws_per_person, drawn_at").eq("id", me.event_id).limit(1),
-  ) as Array<{ name: string; draws_per_person: number; drawn_at: string | null }>;
-  const ev = evRows[0];
-  const assignments = ev.drawn_at ? await myAssignments(me) : [];
-  const revealedIds = assignments.filter((a) => a.revealed_at).map((a) => a.receiver_id);
-  const profs = await profiles(revealedIds);
+  const sb = db();
+  const [evRows, unitRows, partnerRows] = await Promise.all([
+    sb.from("events").select("name, draws_per_person, drawn_at").eq("id", me.event_id).limit(1),
+    sb.from("units").select("name").eq("id", me.unit_id).limit(1),
+    sb.from("participants").select("id, pseudo, avatar").eq("unit_id", me.unit_id).order("created_at"),
+  ]);
+  const ev = (must(evRows) as Array<{ name: string; draws_per_person: number; drawn_at: string | null }>)[0];
+  const members = must(partnerRows) as Profile[];
+  const unitLabel = (must(unitRows) as Array<{ name: string | null }>)[0]?.name ?? null;
+
+  const draws = ev.drawn_at ? await myDraws(me) : [];
+  const reveals = await myReveals(me);
+  const views = await unitViews(draws.filter((d) => reveals.has(d)));
+
   return {
     me: { id: me.id, pseudo: me.pseudo, avatar: me.avatar },
+    group:
+      members.length > 1
+        ? { name: unitName(unitLabel, members), partners: members.filter((m) => m.id !== me.id) }
+        : null,
     event: { name: ev.name, drawsPerPerson: ev.draws_per_person, drawn: !!ev.drawn_at },
-    draws: assignments.map((a, slot) => ({
-      slot,
-      receiver: a.revealed_at ? profs.get(a.receiver_id) ?? null : null,
-    })),
+    draws: draws.map((unitId, slot) => ({ slot, receiver: views.get(unitId) ?? null })),
   };
 }
 
@@ -77,30 +82,47 @@ async function ownIdea(me: Me, id: unknown): Promise<string> {
   return id as string;
 }
 
-async function roomState(me: Me, receiverId: string): Promise<RoomState> {
+async function roomState(me: Me, receiverUnit: string): Promise<RoomState> {
   const sb = db();
-  const [santaRows, ideaRows, msgRows] = await Promise.all([
-    sb.from("assignments").select("giver_id").eq("receiver_id", receiverId),
-    sb.from("ideas").select("id, title, details, url").eq("owner_id", receiverId).order("created_at"),
-    sb.from("messages").select("id, author_id, body, created_at").eq("room_id", receiverId).order("id", { ascending: false }).limit(300),
+  const receiver = (await unitViews([receiverUnit])).get(receiverUnit)!;
+  const memberIds = receiver.members.map((m) => m.id);
+
+  const [giverRows, ideaRows, msgRows] = await Promise.all([
+    sb.from("assignments").select("giver_unit").eq("receiver_unit", receiverUnit),
+    memberIds.length
+      ? sb.from("ideas").select("id, owner_id, title, details, url").in("owner_id", memberIds).order("created_at")
+      : Promise.resolve({ data: [], error: null }),
+    sb.from("messages").select("id, author_id, body, created_at").eq("room_id", receiverUnit).order("id", { ascending: false }).limit(300),
   ]);
-  const santaIds = (must(santaRows) as Array<{ giver_id: string }>).map((s) => s.giver_id);
-  const ideas = must(ideaRows) as Idea[];
+  const giverUnits = (must(giverRows) as Array<{ giver_unit: string }>).map((g) => g.giver_unit);
+  const santas = giverUnits.length
+    ? (must(
+        await sb.from("participants").select("id, pseudo, avatar").in("unit_id", giverUnits).order("created_at"),
+      ) as Profile[])
+    : [];
+  const ideas = must(ideaRows) as Array<Idea & { owner_id: string }>;
   const selRows = ideas.length
     ? (must(await sb.from("selections").select("idea_id, santa_id").in("idea_id", ideas.map((i) => i.id))) as Array<{
         idea_id: string;
         santa_id: string;
       }>)
     : [];
-  const profs = await profiles([receiverId, ...santaIds, ...selRows.map((s) => s.santa_id)]);
+  const santaById = new Map(santas.map((s) => [s.id, s]));
   const takenBy = new Map(selRows.map((s) => [s.idea_id, s.santa_id]));
 
   return {
-    receiver: profs.get(receiverId)!,
-    santas: santaIds.map((id) => ({ ...profs.get(id)!, isMe: id === me.id })),
+    receiver,
+    santas: santas.map((s) => ({ ...s, isMe: s.id === me.id })),
     ideas: ideas.map((i) => {
       const s = takenBy.get(i.id);
-      return { ...i, takenBy: s ? { pseudo: profs.get(s)?.pseudo ?? "?", isMe: s === me.id } : null };
+      return {
+        id: i.id,
+        title: i.title,
+        details: i.details,
+        url: i.url,
+        ownerId: i.owner_id,
+        takenBy: s ? { pseudo: santaById.get(s)?.pseudo ?? "un ancien père Noël", isMe: s === me.id } : null,
+      };
     }),
     messages: (must(msgRows) as Array<{ id: number; author_id: string; body: string; created_at: string }>)
       .reverse()
@@ -122,29 +144,22 @@ export async function POST(req: Request, { params }: Params) {
 
     switch (body.action) {
       case "reveal": {
-        const slot = Number(body.slot);
-        const assignments = await myAssignments(me);
-        const a = assignments[slot];
-        if (!a) fail(404, "Ticket introuvable.");
-        if (!a.revealed_at) {
-          must(
-            await sb
-              .from("assignments")
-              .update({ revealed_at: new Date().toISOString() })
-              .eq("giver_id", me.id)
-              .eq("receiver_id", a.receiver_id),
-          );
-        }
-        const p = (await profiles([a.receiver_id])).get(a.receiver_id)!;
-        return { receiver: p };
+        const draws = await myDraws(me);
+        const unitId = draws[Number(body.slot)];
+        if (!unitId) fail(404, "Ticket introuvable.");
+        must(
+          await sb
+            .from("reveals")
+            .upsert({ participant_id: me.id, receiver_unit: unitId }, { onConflict: "participant_id,receiver_unit", ignoreDuplicates: true }),
+        );
+        return { receiver: (await unitViews([unitId])).get(unitId)! };
       }
 
       case "myIdeas":
         return { ideas: await myIdeas(me) };
 
       case "addIdea": {
-        const count = (await myIdeas(me)).length;
-        if (count >= 50) fail(400, "50 idées maximum.");
+        if ((await myIdeas(me)).length >= 50) fail(400, "50 idées maximum.");
         must(
           await sb.from("ideas").insert({
             owner_id: me.id,
@@ -177,43 +192,37 @@ export async function POST(req: Request, { params }: Params) {
         return { ideas: await myIdeas(me) };
       }
 
-      case "room": {
-        const receiverId = await assertSanta(me, body.receiverId);
-        return roomState(me, receiverId);
-      }
+      case "room":
+        return roomState(me, await assertSanta(me, body.receiverId));
 
       case "send": {
-        const receiverId = await assertSanta(me, body.receiverId);
+        const receiverUnit = await assertSanta(me, body.receiverId);
         must(
-          await sb.from("messages").insert({
-            room_id: receiverId,
-            author_id: me.id,
-            body: text(body.body, 1000, "Le message"),
-          }),
+          await sb.from("messages").insert({ room_id: receiverUnit, author_id: me.id, body: text(body.body, 1000, "Le message") }),
         );
-        return roomState(me, receiverId);
+        return roomState(me, receiverUnit);
       }
 
       case "take": {
-        const receiverId = await assertSanta(me, body.receiverId);
+        const receiverUnit = await assertSanta(me, body.receiverId);
         const ideaId = typeof body.ideaId === "string" ? body.ideaId : fail(400, "Idée invalide.");
-        const owned = must(
-          await sb.from("ideas").select("id").eq("id", ideaId).eq("owner_id", receiverId).limit(1),
-        ) as unknown[];
-        if (!owned.length) fail(404, "Idée introuvable.");
+        // L'idée doit appartenir à un membre de l'unité de cette room
+        const owner = must(await sb.from("ideas").select("owner_id").eq("id", ideaId).limit(1)) as Array<{ owner_id: string }>;
+        const members = must(await sb.from("participants").select("id").eq("unit_id", receiverUnit)) as Array<{ id: string }>;
+        if (!owner.length || !members.some((m) => m.id === owner[0].owner_id)) fail(404, "Idée introuvable.");
         const res = await sb.from("selections").insert({ idea_id: ideaId, santa_id: me.id });
         if (res.error) {
           if (res.error.code === "23505") fail(409, "Un autre père Noël vient de prendre cette idée.");
           must(res);
         }
-        return roomState(me, receiverId);
+        return roomState(me, receiverUnit);
       }
 
       case "release": {
-        const receiverId = await assertSanta(me, body.receiverId);
+        const receiverUnit = await assertSanta(me, body.receiverId);
         if (typeof body.ideaId !== "string") fail(400, "Idée invalide.");
         must(await sb.from("selections").delete().eq("idea_id", body.ideaId).eq("santa_id", me.id));
-        return roomState(me, receiverId);
+        return roomState(me, receiverUnit);
       }
 
       default:

@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import Avatar from "@/components/Avatar";
+import UnitAvatar from "@/components/UnitAvatar";
 import { api, copyOrShare, resizeImage } from "@/lib/api";
 import type { AdminState } from "@/lib/types";
 
@@ -67,6 +68,7 @@ export default function AdminPage() {
 
       <EventSettings state={state} busy={busy} drawn={drawn} act={act} />
       <Participants state={state} busy={busy} drawn={drawn} act={act} />
+      <Groups state={state} busy={busy} drawn={drawn} act={act} />
       <Exclusions state={state} busy={busy} drawn={drawn} act={act} />
       <DrawSection state={state} busy={busy} drawn={drawn} act={act} />
     </>
@@ -127,7 +129,16 @@ function Participants({ state, busy, drawn, act }: SectionProps) {
 
       <ul className="people">
         {state.participants.map((p) => (
-          <ParticipantRow key={p.id} p={p} k={state.event.drawsPerPerson} eventName={state.event.name} busy={busy} drawn={drawn} act={act} />
+          <ParticipantRow
+            key={p.id}
+            p={p}
+            group={groupLabel(state, p.unitId)}
+            k={state.event.drawsPerPerson}
+            eventName={state.event.name}
+            busy={busy}
+            drawn={drawn}
+            act={act}
+          />
         ))}
       </ul>
 
@@ -150,6 +161,7 @@ function Participants({ state, busy, drawn, act }: SectionProps) {
 
 function ParticipantRow({
   p,
+  group,
   k,
   eventName,
   busy,
@@ -157,6 +169,7 @@ function ParticipantRow({
   act,
 }: {
   p: Participant;
+  group: string | null;
   k: number;
   eventName: string;
   busy: boolean;
@@ -202,6 +215,7 @@ function ParticipantRow({
       <Avatar p={p} />
       <div className="grow">
         <p className="person-name">{p.pseudo}</p>
+        {group && <p className="person-meta">Groupe {group}</p>}
         {drawn && (
           <p className="person-meta">
             {p.revealed === k ? "A découvert tous ses tickets" : `${p.revealed} ticket${p.revealed > 1 ? "s" : ""} gratté${p.revealed > 1 ? "s" : ""} sur ${k}`}
@@ -323,7 +337,10 @@ function Exclusions({ state, busy, drawn, act }: SectionProps) {
   return (
     <section className="ticket stack">
       <h2 className="section-title">Exclusions</h2>
-      <p className="hint">Pour éviter par exemple que deux conjoints se tirent entre eux. Personne ne peut se tirer soi-même.</p>
+      <p className="hint">
+        Pour éviter par exemple que deux conjoints se tirent entre eux. Personne ne peut se tirer soi-même, ni tirer son
+        propre groupe. Exclure un membre d&apos;un groupe exclut tout le groupe.
+      </p>
       {groups.length > 0 && (
         <ul className="exclusions">
           {groups.map((g) => (
@@ -372,8 +389,14 @@ function Exclusions({ state, busy, drawn, act }: SectionProps) {
   );
 }
 
+const fmt = (x: number) => x.toLocaleString("fr-FR", { maximumFractionDigits: 1 });
+
 function DrawSection({ state, busy, drawn, act }: SectionProps) {
   const n = state.participants.length;
+  const units = new Set(state.participants.map((p) => p.unitId)).size;
+  const g = state.groups.length;
+  const k = state.event.drawsPerPerson;
+  const b = state.balance;
   return (
     <section className="ticket stack draw-section">
       <h2 className="section-title">Tirage au sort</h2>
@@ -384,6 +407,13 @@ function DrawSection({ state, busy, drawn, act }: SectionProps) {
             {new Date(state.event.drawnAt!).toLocaleDateString("fr-FR", { day: "numeric", month: "long", hour: "2-digit", minute: "2-digit" })}. Envoie
             à chacun son lien : il découvrira ses tirés au sort en grattant ses tickets.
           </p>
+          {b && (
+            <p>
+              {b.min === b.max
+                ? `Chaque personne a ${fmt(b.min)} cadeau${b.min > 1 ? "x" : ""} à préparer.`
+                : `Chaque personne a entre ${fmt(b.min)} et ${fmt(b.max)} cadeaux à préparer${g ? " (dans un groupe, les cadeaux sont partagés entre ses membres)" : ""}. C'est la répartition la plus équilibrée possible avec ces groupes et ces exclusions.`}
+            </p>
+          )}
           <p className="hint">Même toi, tu ne peux pas voir qui a tiré qui.</p>
           <button
             className="link-button danger"
@@ -403,13 +433,13 @@ function DrawSection({ state, busy, drawn, act }: SectionProps) {
       ) : (
         <>
           <p>
-            {n < 2
-              ? "Ajoute au moins deux participants."
-              : `${n} participants, ${state.event.drawsPerPerson} tirage${state.event.drawsPerPerson > 1 ? "s" : ""} chacun. Une fois lancé, la liste des participants et les exclusions sont figées.`}
+            {units < 2
+              ? "Ajoute au moins deux participants (ou une personne et un groupe)."
+              : `${n} participants${g ? `, dont ${g} groupe${g > 1 ? "s" : ""}, soit ${units} au tirage` : ""}. Chacun${g ? " (personne seule ou groupe)" : ""} tire ${k} ${k > 1 ? "personnes ou groupes" : "personne ou groupe"}. ${g ? "Le tirage répartit les groupes pour que chacun ait un nombre de cadeaux aussi proche que possible. " : ""}Une fois lancé, les participants, les groupes et les exclusions sont figés.`}
           </p>
           <button
             className="button button-big"
-            disabled={busy || n < 2}
+            disabled={busy || units < 2}
             onClick={() => {
               if (confirm("Lancer le tirage maintenant ?")) act({ action: "draw" }, "Tirage effectué ! Envoie maintenant les liens.");
             }}
@@ -419,5 +449,135 @@ function DrawSection({ state, busy, drawn, act }: SectionProps) {
         </>
       )}
     </section>
+  );
+}
+
+function groupLabel(state: AdminState, unitId: string): string | null {
+  const g = state.groups.find((x) => x.id === unitId);
+  if (!g) return null;
+  return g.name || g.memberIds.map((id) => state.participants.find((p) => p.id === id)?.pseudo).join(" & ");
+}
+
+function Groups({ state, busy, drawn, act }: SectionProps) {
+  const [selected, setSelected] = useState<string[]>([]);
+  const [name, setName] = useState("");
+  const solos = state.participants.filter((p) => !state.groups.some((g) => g.id === p.unitId));
+  const byId = new Map(state.participants.map((p) => [p.id, p]));
+
+  if (state.participants.length < 2) return null;
+
+  const create = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (await act({ action: "createGroup", memberIds: selected, name }, "Groupe créé.")) {
+      setSelected([]);
+      setName("");
+    }
+  };
+
+  return (
+    <section className="ticket stack">
+      <h2 className="section-title">Groupes</h2>
+      <p className="hint">
+        Les membres d&apos;un groupe tirent ensemble et sont tirés ensemble : celui qui tire un groupe offre un cadeau à
+        chacun de ses membres. Chaque membre garde son propre lien et sa propre liste d&apos;idées.
+      </p>
+
+      {state.groups.length > 0 && (
+        <ul className="groups">
+          {state.groups.map((g) => (
+            <GroupRow key={g.id} group={g} members={g.memberIds.map((id) => byId.get(id)!).filter(Boolean)} busy={busy} drawn={drawn} act={act} />
+          ))}
+        </ul>
+      )}
+
+      {!drawn && solos.length >= 2 && (
+        <form className="group-form stack" onSubmit={create}>
+          <p className="field-label">Former un groupe avec :</p>
+          <div className="chips">
+            {solos.map((p) => (
+              <label key={p.id} className={`chip ${selected.includes(p.id) ? "on" : ""}`}>
+                <input
+                  type="checkbox"
+                  checked={selected.includes(p.id)}
+                  onChange={(e) => setSelected((s) => (e.target.checked ? [...s, p.id] : s.filter((x) => x !== p.id)))}
+                />
+                <Avatar p={p} size={26} />
+                {p.pseudo}
+              </label>
+            ))}
+          </div>
+          <label className="field">
+            <span>Nom du groupe (facultatif)</span>
+            <input value={name} onChange={(e) => setName(e.target.value)} maxLength={60} placeholder="Les Martin" />
+          </label>
+          <button className="button button-quiet" disabled={busy || selected.length < 2}>
+            Former le groupe{selected.length >= 2 ? ` (${selected.length} personnes)` : ""}
+          </button>
+        </form>
+      )}
+    </section>
+  );
+}
+
+function GroupRow({
+  group,
+  members,
+  busy,
+  drawn,
+  act,
+}: {
+  group: AdminState["groups"][number];
+  members: Participant[];
+  busy: boolean;
+  drawn: boolean;
+  act: SectionProps["act"];
+}) {
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(group.name ?? "");
+  const label = group.name || members.map((m) => m.pseudo).join(" & ");
+
+  return (
+    <li className="group-row">
+      <UnitAvatar members={members} size={44} />
+      <div className="grow">
+        {editing ? (
+          <div className="row">
+            <input value={name} onChange={(e) => setName(e.target.value)} maxLength={60} placeholder="Nom du groupe" aria-label="Nom du groupe" className="grow" />
+            <button
+              className="button button-small"
+              disabled={busy}
+              onClick={async () => {
+                if (await act({ action: "renameGroup", groupId: group.id, name }, "Groupe renommé.")) setEditing(false);
+              }}
+            >
+              Enregistrer
+            </button>
+          </div>
+        ) : (
+          <>
+            <p className="person-name">{label}</p>
+            <p className="person-meta">{members.map((m) => m.pseudo).join(", ")}</p>
+          </>
+        )}
+      </div>
+      <div className="person-actions">
+        {!editing && (
+          <button className="link-button" onClick={() => setEditing(true)}>
+            Renommer
+          </button>
+        )}
+        {!drawn && (
+          <button
+            className="link-button danger"
+            disabled={busy}
+            onClick={() => {
+              if (confirm(`Dissoudre le groupe « ${label} » ? Ses membres participeront seuls.`)) act({ action: "dissolveGroup", groupId: group.id }, "Groupe dissous.");
+            }}
+          >
+            Dissoudre
+          </button>
+        )}
+      </div>
+    </li>
   );
 }

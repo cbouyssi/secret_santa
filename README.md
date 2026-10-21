@@ -4,6 +4,7 @@ Tirage au sort de cadeaux avec tickets à gratter, listes d'idées et discussion
 
 - **Organisateur** : ajoute les participants (pseudo + photo facultative), définit les exclusions et le nombre de personnes tirées par participant, lance le tirage et envoie à chacun son lien personnel.
 - **Participant** (via son lien) : gratte ses tickets pour découvrir qui il gâte, écrit sa liste d'idées, et rejoint une discussion avec les autres pères Noël de chaque personne tirée pour se répartir les idées.
+- **Groupes** : l'organisateur peut regrouper des participants (un couple, une famille). Un groupe tire et est tiré comme une seule entité ; tirer un groupe, c'est offrir un cadeau à chacun de ses membres. Le tirage équilibre la répartition pour que chaque personne ait un nombre de cadeaux à préparer aussi proche que possible du nombre de tirages choisi. Chaque membre garde son lien et sa liste, et gratte lui-même les tickets communs du groupe.
 - Une idée ne peut être prise que par un seul père Noël. Le destinataire ne voit jamais quelles idées ont été prises, ni qui l'a tiré. L'organisateur non plus.
 
 Stack : Next.js (Vercel) + Supabase (Postgres). Tout tient dans les offres gratuites.
@@ -58,6 +59,19 @@ Chaque `git push` sur `main` redéploie automatiquement le site.
 
 Les participants peuvent écrire leur liste d'idées avant même le tirage.
 
+## Mise à jour depuis la version 1 (ajout des groupes)
+
+Si ta base a été créée avec la première version :
+
+1. Dans Supabase > SQL Editor, exécute **une seule fois** `supabase/migration-v2-groupes.sql`. Toutes les données sont conservées (participants, liens, listes, tirage, tickets grattés, messages).
+2. Pousse le nouveau code sur GitHub : Vercel redéploie automatiquement.
+
+Pour une nouvelle installation, `supabase/schema.sql` contient déjà tout : n'exécute pas la migration.
+
+## Comment le tirage équilibre les groupes
+
+Chaque personne seule ou groupe tire k « entités » (k = nombre de tirages réglé par l'organisateur). Une entité de s personnes devrait idéalement avoir k × s cadeaux à préparer, soit k par personne. Le tirage cherche la répartition qui s'en approche le plus, tout en respectant les exclusions. L'équilibre parfait n'est pas toujours possible : par exemple avec 2 couples et k = 2, un couple ne peut tirer l'autre qu'une fois, donc certaines personnes seules devront tirer un couple. La page organisateur affiche après le tirage la fourchette du nombre de cadeaux par personne.
+
 ## Bon à savoir
 
 - **Pause Supabase** : un projet gratuit inactif pendant 7 jours est mis en pause. Si le site affiche « Erreur de base de données », va sur le tableau de bord Supabase et clique **Restore project**. Fais-le juste avant d'envoyer les liens.
@@ -77,7 +91,7 @@ npm run test:draw            # vérifie l'algorithme de tirage
 ## Organisation du code
 
 - `supabase/schema.sql` : tables et sécurité (RLS activé sans politique : seul le serveur accède aux données).
-- `lib/draw.ts` : algorithme de tirage (k appariements parfaits successifs, avec relance si impasse).
+- `lib/draw.ts` : algorithme de tirage (tirages aléatoires valides améliorés par échanges pour équilibrer les groupes).
 - `app/api/admin/[token]` : actions de l'organisateur.
 - `app/api/p/[token]` : actions du participant ; c'est ici que sont faites les vérifications de visibilité.
 - `app/admin/[token]`, `app/p/[token]` : les pages.

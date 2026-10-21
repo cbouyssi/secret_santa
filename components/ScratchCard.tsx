@@ -2,8 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import confetti from "canvas-confetti";
-import Avatar from "./Avatar";
-import type { Profile } from "@/lib/types";
+import UnitAvatar from "./UnitAvatar";
+import type { UnitView } from "@/lib/types";
 
 const PHRASES = [
   "Ho ho ho ! Prépare ta hotte pour",
@@ -17,19 +17,19 @@ const PHRASES = [
 type Props = {
   number: number;
   /** Appelé au premier coup de grattage : révèle côté serveur et renvoie le profil. */
-  reveal: () => Promise<Profile>;
+  reveal: () => Promise<UnitView>;
   /** Appelé quand le ticket est entièrement découvert. */
-  onDone: (p: Profile) => void;
+  onDone: (u: UnitView) => void;
 };
 
 export default function ScratchCard({ number, reveal, onDone }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [profile, setProfile] = useState<Profile | null>(null);
+  const [profile, setProfile] = useState<UnitView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [cleared, setCleared] = useState(false);
   const [phrase] = useState(() => PHRASES[Math.floor(Math.random() * PHRASES.length)]);
   const started = useRef(false);
-  const profileRef = useRef<Profile | null>(null);
+  const profileRef = useRef<UnitView | null>(null);
   const finishing = useRef(false);
 
   // Dessine la couche dorée à gratter
@@ -174,8 +174,11 @@ export default function ScratchCard({ number, reveal, onDone }: Props) {
           {profile ? (
             <div className={`reveal ${cleared ? "pop" : ""}`}>
               <p className="reveal-phrase">{phrase}</p>
-              <Avatar p={profile} size={96} />
-              <p className="reveal-name">{profile.pseudo}</p>
+              <UnitAvatar members={profile.members} size={96} />
+              <p className="reveal-name">{profile.name}</p>
+              {profile.members.length > 1 && (
+                <p className="reveal-phrase">Un groupe : {profile.members.length} cadeaux, un pour chacun</p>
+              )}
             </div>
           ) : (
             <p className="reveal-phrase">Les lutins cherchent…</p>

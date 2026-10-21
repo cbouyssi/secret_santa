@@ -4,8 +4,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams } from "next/navigation";
 import Avatar from "@/components/Avatar";
 import ScratchCard from "@/components/ScratchCard";
+import UnitAvatar from "@/components/UnitAvatar";
 import { api } from "@/lib/api";
-import type { Idea, MeState, Profile, RoomState } from "@/lib/types";
+import type { Idea, MeState, RoomState, UnitView } from "@/lib/types";
 
 type Tab = "tickets" | "liste" | "rooms";
 
@@ -31,7 +32,7 @@ export default function ParticipantPage() {
 
   if (!state) return error ? <p className="ticket error">{error}</p> : <p className="loading">Chargement…</p>;
 
-  const revealed = state.draws.filter((d) => d.receiver).map((d) => d.receiver!) as Profile[];
+  const revealed = state.draws.filter((d) => d.receiver).map((d) => d.receiver!) as UnitView[];
 
   const openRoom = (id: string) => {
     setRoom(id);
@@ -49,6 +50,13 @@ export default function ParticipantPage() {
           </div>
         </div>
       </header>
+
+      {state.group && (
+        <p className="banner">
+          Tu fais partie du groupe « {state.group.name} » avec {state.group.partners.map((p) => p.pseudo).join(", ")}. Vous
+          offrez ensemble aux mêmes personnes : vos tickets sont communs, mais chacun gratte les siens.
+        </p>
+      )}
 
       <nav className="tabs" aria-label="Sections">
         <button className={tab === "tickets" ? "active" : ""} onClick={() => setTab("tickets")}>
@@ -97,7 +105,7 @@ function Tickets({
 }: {
   state: MeState;
   endpoint: string;
-  onRevealed: (slot: number, p: Profile) => void;
+  onRevealed: (slot: number, u: UnitView) => void;
   openRoom: (id: string) => void;
 }) {
   if (!state.event.drawn) {
@@ -123,10 +131,12 @@ function Tickets({
               <span className="ticket-number">Ticket n° {d.slot + 1}</span>
             </div>
             <div className="revealed-body">
-              <Avatar p={d.receiver} size={64} />
+              <UnitAvatar members={d.receiver.members} size={64} />
               <div className="grow">
-                <p className="small">Tu offres un cadeau à</p>
-                <p className="revealed-name">{d.receiver.pseudo}</p>
+                <p className="small">
+                  {d.receiver.members.length > 1 ? `Un cadeau pour chacun des ${d.receiver.members.length} membres de` : "Tu offres un cadeau à"}
+                </p>
+                <p className="revealed-name">{d.receiver.name}</p>
               </div>
               <button className="button button-small" onClick={() => openRoom(d.receiver!.id)}>
                 Voir sa liste
@@ -137,7 +147,7 @@ function Tickets({
           <ScratchCard
             key={d.slot}
             number={d.slot + 1}
-            reveal={async () => (await api<{ receiver: Profile }>(endpoint, { action: "reveal", slot: d.slot })).receiver}
+            reveal={async () => (await api<{ receiver: UnitView }>(endpoint, { action: "reveal", slot: d.slot })).receiver}
             onDone={(p) => onRevealed(d.slot, p)}
           />
         ),
@@ -283,7 +293,7 @@ function IdeaForm({
   );
 }
 
-function RoomList({ revealed, drawn, open }: { revealed: Profile[]; drawn: boolean; open: (id: string) => void }) {
+function RoomList({ revealed, drawn, open }: { revealed: UnitView[]; drawn: boolean; open: (id: string) => void }) {
   if (!revealed.length) {
     return (
       <section className="ticket stack">
@@ -302,9 +312,9 @@ function RoomList({ revealed, drawn, open }: { revealed: Profile[]; drawn: boole
         {revealed.map((p) => (
           <li key={p.id}>
             <button className="room-link" onClick={() => open(p.id)}>
-              <Avatar p={p} size={48} />
+              <UnitAvatar members={p.members} size={48} />
               <span className="grow">
-                Les pères Noël de <strong>{p.pseudo}</strong>
+                Les pères Noël de <strong>{p.name}</strong>
               </span>
               <span aria-hidden="true">›</span>
             </button>
@@ -355,6 +365,7 @@ function Room({ endpoint, receiverId, meId, back }: { endpoint: string; receiver
   if (!room) return error ? <p className="ticket error">{error}</p> : <p className="loading">Chargement…</p>;
 
   const byId = new Map(room.santas.map((s) => [s.id, s]));
+  const isGroup = room.receiver.members.length > 1;
   const others = room.santas.filter((s) => !s.isMe);
 
   const act = async (body: Record<string, unknown>) => {
@@ -371,22 +382,31 @@ function Room({ endpoint, receiverId, meId, back }: { endpoint: string; receiver
 
       <section className="ticket stack">
         <div className="room-head">
-          <Avatar p={room.receiver} size={64} />
+          <UnitAvatar members={room.receiver.members} size={64} />
           <div>
-            <h2 className="section-title">Les cadeaux de {room.receiver.pseudo}</h2>
+            <h2 className="section-title">Les cadeaux de {room.receiver.name}</h2>
             <p className="small">
               {others.length
-                ? `Avec ${others.map((s) => s.pseudo).join(", ")}. ${room.receiver.pseudo} ne voit pas cette page.`
-                : `Tu es le seul père Noël de ${room.receiver.pseudo}.`}
+                ? `Avec ${others.map((s) => s.pseudo).join(", ")}. ${isGroup ? "Ce groupe ne voit" : `${room.receiver.name} ne voit`} pas cette page.`
+                : `Tu es le seul père Noël de ${room.receiver.name}.`}
             </p>
           </div>
         </div>
 
-        {room.ideas.length === 0 ? (
-          <p className="hint">{room.receiver.pseudo} n&apos;a pas encore écrit d&apos;idées. Repasse plus tard, ou parlez-en ici.</p>
+        {room.receiver.members.map((member) => {
+          const ideas = room.ideas.filter((i) => i.ownerId === member.id);
+          return (
+          <div key={member.id} className="stack">
+            {isGroup && (
+              <h3 className="member-title">
+                <Avatar p={member} size={32} /> Pour {member.pseudo}
+              </h3>
+            )}
+        {ideas.length === 0 ? (
+          <p className="hint">{member.pseudo} n&apos;a pas encore écrit d&apos;idées. Repasse plus tard, ou parlez-en ici.</p>
         ) : (
           <ul className="ideas">
-            {room.ideas.map((i) => (
+            {ideas.map((i) => (
               <li key={i.id} className={`idea ${i.takenBy ? "taken" : ""}`}>
                 <div className="grow">
                   <p className="idea-title">{i.title}</p>
@@ -419,6 +439,9 @@ function Room({ endpoint, receiverId, meId, back }: { endpoint: string; receiver
             ))}
           </ul>
         )}
+          </div>
+          );
+        })}
       </section>
 
       <section className="ticket chat">
